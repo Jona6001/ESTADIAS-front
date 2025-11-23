@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import "../App.css";
 import Swal from "sweetalert2";
-import { loginUser, recoverPassword } from "../services/authService";
+import { loginUser } from "../services/authService";
 import { useNavigate } from "react-router-dom";
 import { clearSession } from "../utils/auth";
 
@@ -9,7 +9,6 @@ const Login = () => {
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
 	const [submitting, setSubmitting] = useState(false);
-	const [recovering, setRecovering] = useState(false);
 	const navigate = useNavigate();
 
 	const handleSubmit = async (e) => {
@@ -44,62 +43,6 @@ const Login = () => {
 			});
 		} finally {
 			setSubmitting(false);
-		}
-	};
-
-	const handleForgotPassword = async () => {
-		if (recovering) return;
-		const { value: emailInput, isConfirmed } = await Swal.fire({
-			title: "Recuperar contraseña",
-			text: "Ingresa el correo con el que te registraste.",
-			input: "email",
-			inputLabel: "Correo electrónico",
-			inputPlaceholder: "usuario@empresa.com",
-			confirmButtonText: "Enviar instrucciones",
-			cancelButtonText: "Cancelar",
-			confirmButtonColor: "#a30015",
-			showCancelButton: true,
-			background: "#f8f9fa",
-		});
-
-		if (!isConfirmed || !emailInput) return;
-
-		const sanitizedEmail = emailInput.trim().toLowerCase();
-		if (!sanitizedEmail) return;
-
-		setRecovering(true);
-		Swal.fire({
-			title: "Enviando...",
-			text: "Generando instrucciones de recuperación.",
-			allowOutsideClick: false,
-			showConfirmButton: false,
-			background: "#f8f9fa",
-			didOpen: () => {
-				Swal.showLoading();
-			},
-		});
-
-		try {
-			await recoverPassword(sanitizedEmail);
-			Swal.close();
-			await Swal.fire({
-				icon: "success",
-				title: "Correo enviado",
-				text: "Te enviamos un mensaje con los pasos para restablecer tu contraseña.",
-				confirmButtonColor: "#0077b6",
-				background: "#f8f9fa",
-			});
-		} catch (err) {
-			Swal.close();
-			await Swal.fire({
-				icon: "error",
-				title: "No se pudo enviar",
-				text: err.message || "Intenta nuevamente más tarde.",
-				confirmButtonColor: "#d90429",
-				background: "#fff",
-			});
-		} finally {
-			setRecovering(false);
 		}
 	};
 
@@ -154,16 +97,6 @@ const Login = () => {
 						<button type="submit" disabled={submitting}>
 							{submitting ? "Ingresando..." : "Entrar"}
 						</button>
-						<div className="login-footer">
-							<button
-								type="button"
-								className="login-forgot"
-								disabled={recovering}
-								onClick={handleForgotPassword}
-							>
-								¿Olvidaste tu contraseña?
-							</button>
-						</div>
 					</form>
 				</div>
 			</div>

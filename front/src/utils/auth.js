@@ -50,9 +50,34 @@ export const fetchWithAuth = async (url, navigate, options = {}) => {
 
   const response = await fetch(url, { ...options, headers });
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     await handleTokenExpired(navigate);
     throw new Error("Sesión expirada");
+  }
+
+  if (response.status === 403) {
+    let message = "Acceso denegado";
+    try {
+      const text = await response.clone().text();
+      if (text) {
+        try {
+          const data = JSON.parse(text);
+          message =
+            data?.mensaje ||
+            data?.message ||
+            data?.error ||
+            data?.detail ||
+            message;
+        } catch {
+          message = text;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    const error = new Error(message);
+    error.status = 403;
+    throw error;
   }
 
   return response;

@@ -34,9 +34,50 @@ const initialCotizacion = {
   ID_cliente: "",
   nombre: "",
   incluir_iva: false,
-  productos: [], // [{ productoId, cantidad (m2), tipo_medida }]
+  productos: [], // [{ productoId, cantidad, tipo_medida, descripcion }]
   anticipo: 0,
   status: "pendiente",
+};
+
+const resolveUnidadMedidaProducto = (producto) => {
+  if (!producto) return "m2";
+
+  const unidadCruda =
+    producto.unidadMedida || producto.unidad_medida || producto.tipo_medida;
+  if (unidadCruda) {
+    const normalized = String(unidadCruda).toLowerCase();
+    if (normalized.includes("pieza")) return "piezas";
+    if (normalized.includes("m2") || normalized.includes("m²")) return "m2";
+  }
+
+  const hasM2 =
+    producto.cantidad_m2 !== null &&
+    producto.cantidad_m2 !== undefined &&
+    producto.medida_por_unidad !== null &&
+    producto.medida_por_unidad !== undefined;
+  const isSoloPiezas =
+    producto.cantidad_piezas !== null &&
+    producto.cantidad_piezas !== undefined &&
+    (producto.cantidad_m2 === null || producto.cantidad_m2 === undefined);
+
+  if (hasM2) return "m2";
+  if (isSoloPiezas) return "piezas";
+  return "m2";
+};
+
+const normalizeProducto = (producto) => {
+  if (!producto) return producto;
+  const unidad = resolveUnidadMedidaProducto(producto);
+  const precioParsed = Number(producto.precio);
+  const precioNumber = Number.isFinite(precioParsed)
+    ? precioParsed
+    : Number(producto.precioNumber || 0) || 0;
+
+  return {
+    ...producto,
+    unidadMedida: unidad,
+    precioNumber,
+  };
 };
 
 const Sells = () => {
@@ -58,6 +99,7 @@ const Sells = () => {
     const label = String(s).replaceAll("_", " ");
     return label.charAt(0).toUpperCase() + label.slice(1);
   };
+
   // Navbar / estado global de pantalla
   const [menuOpen, setMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -70,6 +112,7 @@ const Sells = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const authFetch = (url, options) => fetchWithAuth(url, navigate, options);
+
   // Cargar usuario para mostrar nombre en la barra y validar sesión
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -84,6 +127,7 @@ const Sells = () => {
       /* ignore */
     }
   }, [navigate]);
+
   // Rol
   let isAdmin = false;
   try {
@@ -105,6 +149,8 @@ const Sells = () => {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsData, setDetailsData] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [productosBloqueados, setProductosBloqueados] = useState(false);
+  const [modalInfo, setModalInfo] = useState("");
   // Reporte global por cliente
   const [reportOpen, setReportOpen] = useState(false);
   // Marca de último ajuste por cotización para mostrar badge en detalles
@@ -145,6 +191,63 @@ const Sells = () => {
   const [form, setForm] = useState(initialCotizacion);
   // Eliminado buscador de cliente en modal para ahorrar espacio
   // opcional: búsqueda de productos (no usada actualmente)
+
+  const getProductoInfo = (productoId) => {
+    const prod = productos.find((p) => p.ID === productoId);
+    if (!prod) {
+      return {
+        prod: null,
+        unidad: null,
+        precio: 0,
+        medidaPorUnidad: null,
+        stockPiezas: null,
+        stockM2: null,
+      };
+    }
+
+    const unidad = prod.unidadMedida || resolveUnidadMedidaProducto(prod);
+    const precio =
+      typeof prod.precioNumber === "number" && !Number.isNaN(prod.precioNumber)
+        ? prod.precioNumber
+        : Number(prod.precio || 0) || 0;
+    const medidaPorUnidad =
+      prod.medida_por_unidad !== null && prod.medida_por_unidad !== undefined
+        ? Number(prod.medida_por_unidad)
+        : null;
+    const stockPiezas =
+      prod.cantidad_piezas !== null && prod.cantidad_piezas !== undefined
+        ? Number(prod.cantidad_piezas)
+        : null;
+    const stockM2 =
+      prod.cantidad_m2 !== null && prod.cantidad_m2 !== undefined
+        ? Number(prod.cantidad_m2)
+        : null;
+
+    return {
+      prod,
+      unidad,
+      precio,
+      medidaPorUnidad,
+      stockPiezas,
+      stockM2,
+    };
+  };
+
+  const getLineaTipoMedida = (linea) => {
+    if (!linea) return "m2";
+    if (linea.tipo_medida) return linea.tipo_medida;
+    const info = getProductoInfo(linea.productoId);
+    return info.unidad || "m2";
+  };
+
+  const calcularSubtotalLocal = (lista) =>
+    (lista || []).reduce((acc, item) => {
+      const cantidad = Number(item?.cantidad || 0);
+      if (!cantidad || Number.isNaN(cantidad)) return acc;
+      const { precio } = getProductoInfo(item.productoId);
+      if (!precio || Number.isNaN(precio)) return acc;
+      return acc + precio * cantidad;
+    }, 0);
 
   // Fecha y hora
   useEffect(() => {
@@ -197,7 +300,10 @@ const Sells = () => {
         ? oData
         : [];
       setClientes(Array.isArray(clientesArr) ? clientesArr : []);
-      setProductos(Array.isArray(productosArr) ? productosArr : []);
+      const productosNormalizados = Array.isArray(productosArr)
+        ? productosArr.map(normalizeProducto)
+        : [];
+      setProductos(productosNormalizados);
       setCotizaciones(Array.isArray(cotArr) ? cotArr : []);
     } catch (err) {
       console.error("fetchAll error:", err);
@@ -246,6 +352,8 @@ const Sells = () => {
     setForm({ ...initialCotizacion });
     setModalOpen("add");
     setErrorMsg("");
+    setProductosBloqueados(false);
+    setModalInfo("");
   };
 
   // Foco inteligente por mensaje de error del backend
@@ -331,14 +439,43 @@ const Sells = () => {
         cot.usuario?.nombre ||
         "-";
       const productosNorm = prods
-        .map((p) => ({
-          productoId:
-            p.productoId || p.ID_producto || p.Producto?.ID || p.producto?.ID,
-          cantidad: p.cantidad,
-          tipoFigura: p.tipoFigura || p.tipo_figura || p.figura,
-          medidas: p.medidas || p.medida || p.medida_custom,
-        }))
-        .filter((x) => x.productoId);
+        .map((p) => {
+          const productoId =
+            p.productoId || p.ID_producto || p.Producto?.ID || p.producto?.ID;
+          if (!productoId) return null;
+
+          const infoProducto = getProductoInfo(productoId);
+          const normalizarTipo = (valor) => {
+            if (!valor) return null;
+            const text = String(valor).toLowerCase();
+            if (text.includes("pieza")) return "piezas";
+            if (text.includes("m2") || text.includes("m²")) return "m2";
+            return null;
+          };
+
+          const tipoMedida =
+            normalizarTipo(p.tipo_medida) ||
+            normalizarTipo(p.unidad_medida) ||
+            normalizarTipo(p.unidadMedida) ||
+            normalizarTipo(p.tipoMedida) ||
+            normalizarTipo(infoProducto.unidad) ||
+            normalizarTipo(
+              p.Producto ? resolveUnidadMedidaProducto(p.Producto) : null
+            ) ||
+            normalizarTipo(
+              p.producto ? resolveUnidadMedidaProducto(p.producto) : null
+            ) ||
+            "m2";
+
+          return {
+            productoId,
+            cantidad: p.cantidad,
+            tipo_medida: tipoMedida,
+            tipoFigura: p.tipoFigura || p.tipo_figura || p.figura,
+            medidas: p.medidas || p.medida || p.medida_custom,
+          };
+        })
+        .filter(Boolean);
 
       setVentaResumen({
         ID: ord.ID || ord.id,
@@ -458,14 +595,14 @@ const Sells = () => {
   const [editTarget, setEditTarget] = useState(null);
 
   const openEditModal = async (cot) => {
-    // Solo permitir edición de productos cuando la cotización está 'pendiente'
     const rawStatus = (cot.status || "").toLowerCase();
-    if (rawStatus !== "pendiente") {
-      setErrorMsg(
-        "Solo se pueden modificar productos cuando el estado es 'pendiente'. Cambia el estado a pendiente o duplica la cotización."
-      );
-      return;
-    }
+    const esPendiente = rawStatus === "pendiente";
+    setProductosBloqueados(!esPendiente);
+    setModalInfo(
+      esPendiente
+        ? ""
+        : "Los productos se muestran solo de lectura porque la cotización no está en estado pendiente. Ajusta el estado y los datos generales desde aquí."
+    );
     // Abrir modal con datos base
     setEditTarget(cot);
     setModalOpen("edit");
@@ -501,33 +638,45 @@ const Sells = () => {
         ? payload.productos
         : [];
 
-      // Mapear al formato del formulario de edición/creación (solo m²)
-      const mapped = productosDetalle.map((p) => {
-        // El backend devuelve VentasProductos con relación Producto
-        // p.productoId es el ID del producto en esta venta
-        // p.Producto es el objeto del producto con ID, nombre, etc.
-        
-        let prodId = Number(p.productoId || 0);
-        if (!prodId && p.Producto) {
-          prodId = Number(p.Producto.ID || p.Producto.id || 0);
-        }
-        
-        // Usar cantidad_m2_calculada si existe (es el valor calculado)
-        // Si no, usar cantidad directamente
-        const cantidad = p.cantidad_m2_calculada || p.cantidad || 0;
-        
-        console.log("Producto mapeado:", { 
-          productoId: prodId,
-          cantidad, 
-          producto_nombre: p.Producto?.nombre
-        });
-        
-        return {
-          productoId: prodId,
-          cantidad: cantidad,
-          descripcion: p.descripcion ?? "",
-        };
-      });
+      // Mapear al formato del formulario de edición/creación respetando unidad
+      const mapped = productosDetalle
+        .map((p) => {
+          let prodId = Number(p.productoId || 0);
+          if (!prodId && p.Producto) {
+            prodId = Number(p.Producto.ID || p.Producto.id || 0);
+          }
+
+          const productoCatalogo =
+            productos.find((prod) => prod.ID === prodId) || p.Producto || null;
+          const tipoMedida =
+            p.tipo_medida || resolveUnidadMedidaProducto(productoCatalogo);
+
+          const cantidadCalculada =
+            tipoMedida === "piezas"
+              ? Number(
+                  p.cantidad_piezas_calculada ??
+                    p.cantidad ??
+                    p.cantidad_calculada ??
+                    0
+                )
+              : Number(
+                  p.cantidad_m2_calculada ??
+                    p.cantidad ??
+                    p.cantidad_calculada ??
+                    0
+                );
+
+          return {
+            productoId: prodId,
+            cantidad:
+              Number.isFinite(cantidadCalculada) && cantidadCalculada > 0
+                ? cantidadCalculada
+                : "",
+            descripcion: p.descripcion ?? "",
+            tipo_medida: tipoMedida || "m2",
+          };
+        })
+        .filter((item) => item.productoId);
 
       setForm((prev) => ({ ...prev, productos: mapped }));
     } catch (e) {
@@ -540,6 +689,8 @@ const Sells = () => {
     setModalOpen(null);
     setForm(initialCotizacion);
     setErrorMsg("");
+    setProductosBloqueados(false);
+    setModalInfo("");
   };
 
   // Form handlers
@@ -552,37 +703,62 @@ const Sells = () => {
 
   // Productos en cotización
   const handleAddProducto = () => {
-    setForm({
-      ...form,
+    if (productosBloqueados) return;
+    setForm((prev) => ({
+      ...prev,
       productos: [
-        ...form.productos,
+        ...prev.productos,
         {
           productoId: "",
-          cantidad: "", // m² total ingresado
+          cantidad: "", // cantidad según la unidad del producto
           descripcion: "",
+          tipo_medida: "",
         },
       ],
-    });
+    }));
   };
   void handleAddProducto;
 
   const handleRemoveProducto = (idx) => {
-    const next = [...form.productos];
-    next.splice(idx, 1);
-    setForm({ ...form, productos: next });
+    if (productosBloqueados) return;
+    setForm((prev) => {
+      const next = [...prev.productos];
+      next.splice(idx, 1);
+      return { ...prev, productos: next };
+    });
   };
   void handleRemoveProducto;
 
   const handleProductoChange = (idx, field, value) => {
-    const next = [...form.productos];
-    // Convertir numéricos
-    const numericFields = ["cantidad"];
-    next[idx] = {
-      ...next[idx],
-      [field]:
-        numericFields.includes(field) && value !== "" ? Number(value) : value,
-    };
-    setForm({ ...form, productos: next });
+    if (productosBloqueados) return;
+    setForm((prev) => {
+      const productosNext = [...prev.productos];
+      if (!productosNext[idx]) return prev;
+
+      const current = { ...productosNext[idx] };
+
+      if (field === "productoId") {
+        const productoId = value ? Number(value) : "";
+        current.productoId = productoId;
+        const info = productoId ? getProductoInfo(productoId) : {};
+        current.tipo_medida = info.unidad || "m2";
+        current.cantidad = "";
+      } else if (field === "cantidad") {
+        if (value === "") {
+          current.cantidad = "";
+        } else {
+          const parsed = Number(value);
+          if (!Number.isNaN(parsed)) {
+            current.cantidad = parsed;
+          }
+        }
+      } else {
+        current[field] = value;
+      }
+
+      productosNext[idx] = current;
+      return { ...prev, productos: productosNext };
+    });
   };
   void handleProductoChange;
 
@@ -609,31 +785,41 @@ const Sells = () => {
       return false;
     }
     // Productos
-    if (!form.productos || form.productos.length === 0) {
-      setErrorMsg("Agrega al menos un producto.");
-      return false;
-    }
-    for (let i = 0; i < form.productos.length; i++) {
-      const p = form.productos[i];
-      // productoId
-      if (!p.productoId) {
-        setErrorMsg(`Selecciona el producto #${i + 1}.`);
-        const el = document.getElementById(`prod-${i}-productoId`);
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "center" });
-          el.focus();
-        }
+    const debeValidarProductos = !productosBloqueados || modalOpen !== "edit";
+    if (debeValidarProductos) {
+      if (!form.productos || form.productos.length === 0) {
+        setErrorMsg("Agrega al menos un producto.");
         return false;
       }
-      // cantidad m2
-      if (!p.cantidad || Number(p.cantidad) <= 0) {
-        setErrorMsg(`Ingresa los m² totales (> 0) para el producto #${i + 1}.`);
-        const el = document.getElementById(`prod-${i}-cantidad`);
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "center" });
-          el.focus();
+      for (let i = 0; i < form.productos.length; i++) {
+        const p = form.productos[i];
+        // productoId
+        if (!p.productoId) {
+          setErrorMsg(`Selecciona el producto #${i + 1}.`);
+          const el = document.getElementById(`prod-${i}-productoId`);
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.focus();
+          }
+          return false;
         }
-        return false;
+        const tipoMedida = getLineaTipoMedida(p);
+        const unidadLabel = tipoMedida === "piezas" ? "piezas" : "m²";
+        const cantidadVal =
+          p.cantidad === "" || p.cantidad === null || p.cantidad === undefined
+            ? NaN
+            : Number(p.cantidad);
+        if (!Number.isFinite(cantidadVal) || cantidadVal <= 0) {
+          setErrorMsg(
+            `Ingresa la cantidad en ${unidadLabel} (> 0) para el producto #${i + 1}.`
+          );
+          const el = document.getElementById(`prod-${i}-cantidad`);
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.focus();
+          }
+          return false;
+        }
       }
     }
     return true;
@@ -650,16 +836,20 @@ const Sells = () => {
     }
     if (!validateFormAndFocus()) return;
 
+
     try {
       // Calcular totales locales
-      const subtotal = (form.productos || []).reduce((acc, it) => {
-        const pr = productos.find((p) => p.ID === it.productoId);
-        const precioM2 = Number(pr?.cantidad_m2 || 0);
-        const cantM2 = Number(it.cantidad || 0);
-        return acc + precioM2 * cantM2;
-      }, 0);
+      const subtotal = calcularSubtotalLocal(form.productos);
       const ivaVal = form.incluir_iva ? subtotal * 0.16 : 0;
       const total = subtotal + ivaVal;
+
+      // Validación: no permitir status 'pagado' si el anticipo es menor al total
+      const statusToCheck = (form.status || "pendiente").toLowerCase();
+      const anticipoVal = Number(form.anticipo || 0);
+      if (statusToCheck === "pagado" && anticipoVal < total) {
+        setErrorMsg("No puedes marcar como 'Pagado' si el pago no está completo.");
+        return;
+      }
 
       const cleanForm = {
         nombre: form.nombre,
@@ -669,12 +859,16 @@ const Sells = () => {
         total: Number(total.toFixed(2)),
         ID_usuario: user.ID,
         ID_cliente: form.ID_cliente,
-        productos: form.productos.map((p) => ({
-          productoId: p.productoId,
-          cantidad: p.cantidad, // m² totales
-          tipo_medida: "m2",
-          descripcion: p.descripcion,
-        })),
+        productos: form.productos.map((p) => {
+          const tipoMedida = getLineaTipoMedida(p);
+          const cantidad = Number(p.cantidad || 0);
+          return {
+            productoId: p.productoId,
+            cantidad,
+            tipo_medida: tipoMedida,
+            descripcion: p.descripcion,
+          };
+        }),
         anticipo: form.anticipo || 0,
         status: form.status || "pendiente",
       };
@@ -728,6 +922,7 @@ const Sells = () => {
     }
     if (!validateFormAndFocus()) return;
 
+
     const id = editTarget.ID || editTarget.id;
     const headers = {
       "Content-Type": "application/json",
@@ -735,31 +930,62 @@ const Sells = () => {
 
     // Preparar payload
     // Recalcular totales locales
-    const subtotal = (form.productos || []).reduce((acc, it) => {
-      const pr = productos.find((p) => p.ID === it.productoId);
-      const precioM2 = Number(pr?.cantidad_m2 || 0);
-      const cantM2 = Number(it.cantidad || 0);
-      return acc + precioM2 * cantM2;
-    }, 0);
-    const ivaVal = form.incluir_iva ? subtotal * 0.16 : 0;
-    const total = subtotal + ivaVal;
+    const subtotalCalc = calcularSubtotalLocal(form.productos);
+    const ivaCalc = form.incluir_iva ? subtotalCalc * 0.16 : 0;
+    const totalCalc = subtotalCalc + ivaCalc;
 
-    const payload = {
+    // Validación: no permitir status 'pagado' si el anticipo es menor al total
+    const statusToCheck = (form.status || "pendiente").toLowerCase();
+    const anticipoVal = Number(form.anticipo || 0);
+    if (statusToCheck === "pagado" && anticipoVal < totalCalc) {
+      setErrorMsg("No puedes marcar como 'Pagado' si el pago no está completo.");
+      return;
+    }
+
+    const payloadBase = {
       nombre: form.nombre,
       incluir_iva: !!form.incluir_iva,
-      subtotal: Number(subtotal.toFixed(2)),
-      iva: Number(ivaVal.toFixed(2)),
-      total: Number(total.toFixed(2)),
+      subtotal: Number(subtotalCalc.toFixed(2)),
+      iva: Number(ivaCalc.toFixed(2)),
+      total: Number(totalCalc.toFixed(2)),
       ID_cliente: form.ID_cliente,
-      productos: form.productos.map((p) => ({
-        productoId: p.productoId,
-        cantidad: p.cantidad, // m² totales
-        tipo_medida: "m2",
-        descripcion: p.descripcion,
-      })),
       anticipo: form.anticipo,
       status: form.status,
     };
+
+    if (!productosBloqueados) {
+      payloadBase.productos = form.productos.map((p) => {
+        const tipoMedida = getLineaTipoMedida(p);
+        const cantidad = Number(p.cantidad || 0);
+        return {
+          productoId: p.productoId,
+          cantidad,
+          tipo_medida: tipoMedida,
+          descripcion: p.descripcion,
+        };
+      });
+    } else {
+      const subtotalOriginal = Number(
+        editTarget?.subtotal ??
+          editTarget?.Subtotal ??
+          editTarget?.sub_total ??
+          subtotalCalc
+      );
+      const ivaOriginal = Number(
+        editTarget?.iva ?? editTarget?.IVA ?? ivaCalc
+      );
+      const totalOriginal = Number(
+        editTarget?.total ??
+          editTarget?.Total ??
+          (subtotalOriginal + ivaOriginal)
+      );
+
+      payloadBase.subtotal = Number(subtotalOriginal.toFixed(2));
+      payloadBase.iva = Number(ivaOriginal.toFixed(2));
+      payloadBase.total = Number(totalOriginal.toFixed(2));
+    }
+
+    const payload = payloadBase;
 
     try {
       const res = await authFetch(`${API_COTIZACIONES}/${id}`, {
@@ -921,21 +1147,54 @@ const Sells = () => {
       const productosDetalle = Array.isArray(payload?.productos)
         ? payload.productos
         : [];
-      const mapped = productosDetalle.map((p) => ({
-        productoId: p.productoId || p.Producto?.ID || p.ID_producto || "",
-        cantidad: p.cantidad || 1,
-        tipoFigura: p.tipoFigura || p.tipo_figura || "rectangulo",
-        base: p.base ?? null,
-        altura: p.altura ?? null,
-        radio: p.radio ?? null,
-        base2: p.base2 ?? null,
-        altura2: p.altura2 ?? null,
-        soclo_base: p.soclo_base ?? null,
-        soclo_altura: p.soclo_altura ?? null,
-        cubierta_base: p.cubierta_base ?? null,
-        cubierta_altura: p.cubierta_altura ?? null,
-        descripcion: p.descripcion ?? "",
-      }));
+      const mapped = productosDetalle.map((p) => {
+        const productoIdRaw =
+          p.productoId || p.Producto?.ID || p.ID_producto || "";
+        const productoId =
+          productoIdRaw !== "" && productoIdRaw !== null && productoIdRaw !== undefined
+            ? Number(productoIdRaw)
+            : null;
+        const productoCatalogo =
+          productos.find((prod) => prod.ID === productoId) ||
+          p.Producto ||
+          null;
+        const tipoMedida =
+          p.tipo_medida || resolveUnidadMedidaProducto(productoCatalogo);
+        const cantidadBase =
+          tipoMedida === "piezas"
+            ? Number(
+                p.cantidad_piezas_calculada ??
+                  p.cantidad ??
+                  p.cantidad_calculada ??
+                  0
+              )
+            : Number(
+                p.cantidad_m2_calculada ??
+                  p.cantidad ??
+                  p.cantidad_calculada ??
+                  0
+              );
+        const cantidadNormalizada = Number.isFinite(cantidadBase) && cantidadBase > 0
+          ? cantidadBase
+          : 1;
+
+        return {
+          productoId: productoId ?? "",
+          cantidad: cantidadNormalizada,
+          tipo_medida: tipoMedida || "m2",
+          tipoFigura: p.tipoFigura || p.tipo_figura || "rectangulo",
+          base: p.base ?? null,
+          altura: p.altura ?? null,
+          radio: p.radio ?? null,
+          base2: p.base2 ?? null,
+          altura2: p.altura2 ?? null,
+          soclo_base: p.soclo_base ?? null,
+          soclo_altura: p.soclo_altura ?? null,
+          cubierta_base: p.cubierta_base ?? null,
+          cubierta_altura: p.cubierta_altura ?? null,
+          descripcion: p.descripcion ?? "",
+        };
+      });
       setForm({
         ID_cliente: cot.ID_cliente || "",
         productos: mapped,
@@ -1627,7 +1886,8 @@ const Sells = () => {
                           </td>
                           <td>
                             <div className="table-actions">
-                              {cot.status === "pendiente" ? (
+                              {/* Mostrar botón de venta si NO está pagado al 100% aunque esté fabricado o entregado */}
+                              {Number(cot.anticipo || 0) < Number(cot.total || 0) ? (
                                 <>
                                   <button
                                     className="edit-btn"
@@ -1655,7 +1915,7 @@ const Sells = () => {
                                   </button>
                                   <button
                                     className="ventas-btn"
-                                    title="Confirmar venta"
+                                    title="Abonar / Confirmar venta"
                                     onClick={() => openConfirmVenta(cot)}
                                   >
                                     Venta
@@ -1664,83 +1924,19 @@ const Sells = () => {
                               ) : (
                                 <>
                                   <button
+                                    className="edit-btn"
+                                    title="Editar"
+                                    onClick={() => openEditModal(cot)}
+                                  >
+                                    <FaEdit />
+                                  </button>
+                                  <button
                                     className="ventas-btn"
                                     title="Ver detalles"
                                     onClick={() => openDetails(cot)}
                                   >
                                     <FaEye />
                                   </button>
-                                  {rawStatus === "pendiente" && (
-                                    <button
-                                      className="ventas-btn"
-                                      title="Marcar en proceso"
-                                      onClick={() =>
-                                        updateStatus(cot, "en_proceso")
-                                      }
-                                    >
-                                      En proceso
-                                    </button>
-                                  )}
-                                  {rawStatus === "en_proceso" && (
-                                    <>
-                                      <button
-                                        className="ventas-btn"
-                                        title="Marcar fabricado"
-                                        onClick={() =>
-                                          updateStatus(cot, "fabricado")
-                                        }
-                                      >
-                                        Fab.
-                                      </button>
-                                      <button
-                                        className="ventas-btn"
-                                        title="Marcar en espera de material"
-                                        onClick={() =>
-                                          updateStatus(cot, "espera_material")
-                                        }
-                                      >
-                                        Espera
-                                      </button>
-                                    </>
-                                  )}
-                                  {rawStatus === "fabricado" && (
-                                    <>
-                                      <button
-                                        className="ventas-btn"
-                                        title="Marcar en espera de material"
-                                        onClick={() =>
-                                          updateStatus(cot, "espera_material")
-                                        }
-                                      >
-                                        Espera
-                                      </button>
-                                      <button
-                                        className="ventas-btn"
-                                        title="Marcar entregado"
-                                        onClick={() =>
-                                          updateStatus(cot, "entregado")
-                                        }
-                                      >
-                                        Entreg.
-                                      </button>
-                                    </>
-                                  )}
-                                  {rawStatus === "espera_material" && (
-                                    <button
-                                      className="ventas-btn"
-                                      title="Marcar fabricado"
-                                      onClick={() =>
-                                        updateStatus(cot, "fabricado")
-                                      }
-                                    >
-                                      Fab.
-                                    </button>
-                                  )}
-                                  {rawStatus === "entregado" && (
-                                    <span style={{ color: "#166534", fontWeight: 600, fontSize: "0.8rem" }}>
-                                      ✓ OK
-                                    </span>
-                                  )}
                                   <button
                                     className="duplicate-btn"
                                     title="Duplicar cotización"
@@ -1770,7 +1966,11 @@ const Sells = () => {
 
         {/* Reporte avanzado de ventas */}
         {reportOpen && (
-          <div className="modal-overlay" onClick={() => setReportOpen(false)}>
+          <div
+            className="modal-overlay"
+            onClick={() => setReportOpen(false)}
+            style={{ zIndex: 2000 }}
+          >
             <div
               className="modal-content"
               style={{ 
@@ -1784,76 +1984,23 @@ const Sells = () => {
               }}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Botón X en esquina superior derecha */}
-              <button
-                className="modal-close-btn no-print"
-                onClick={() => setReportOpen(false)}
-                style={{
-                  position: "absolute",
-                  top: "10px",
-                  right: "10px",
-                  width: "32px",
-                  height: "32px",
-                  border: "none",
-                  background: "#dc3545",
-                  color: "white",
-                  borderRadius: "50%",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "18px",
-                  fontWeight: "bold",
-                  zIndex: 1000,
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-                  transition: "all 0.2s ease"
-                }}
-                onMouseOver={(e) => {
-                  e.target.style.background = "#c82333";
-                  e.target.style.transform = "scale(1.1)";
-                }}
-                onMouseOut={(e) => {
-                  e.target.style.background = "#dc3545";
-                  e.target.style.transform = "scale(1)";
-                }}
-              >
-                ✕
-              </button>
-
-              {/* Contenido oculto solo para impresión */}
-              <div className="print-content" style={{ display: "none" }}>
-                <div className="print-title">REPORTE DE VENTAS POR CLIENTE</div>
-                <div className="print-date">
-                  {new Date().toLocaleDateString('es-MX', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric'
-                  })} - {new Date().toLocaleTimeString('es-MX', { 
-                    hour: '2-digit', 
-                    minute: '2-digit' 
-                  })}
-                </div>
-                
-                <div className="filtros-aplicados">
-                  <strong>Filtros aplicados:</strong>
-                  {reportFilters.cliente ? (
-                    reportFilters.cliente === 'all' ? ' Todos los clientes' : ` Cliente: ${clientes.find(c => c.ID == reportFilters.cliente)?.nombre || 'Desconocido'}`
-                  ) : ' Sin filtro de cliente'}
-                  {reportFilters.fechaInicio && ` | Desde: ${reportFilters.fechaInicio}`}
-                  {reportFilters.fechaFin && ` | Hasta: ${reportFilters.fechaFin}`}
-                  {reportFilters.estados.length > 0 && ` | Estados: ${reportFilters.estados.join(', ')}`}
-                </div>
-
-                {(() => {
-                  // Lógica de filtrado para impresión (duplicada)
+              {/* --- BEGIN: moved logic for filtering and summary --- */}
+              {(() => {
+                try {
+                  // Filtrar cotizaciones según criterios
                   let filteredCotizaciones = [...cotizaciones];
-                  
+                  // Filtro por cliente (nombre)
                   if (reportFilters.cliente && reportFilters.cliente !== 'all') {
-                    filteredCotizaciones = filteredCotizaciones.filter(
-                      cot => Number(cot.ID_cliente) === Number(reportFilters.cliente)
-                    );
+                    filteredCotizaciones = filteredCotizaciones.filter(cot => {
+                      const nombre = cot.Cliente?.nombre || cot.cliente?.nombre || "Desconocido";
+                      return nombre === reportFilters.cliente;
+                    });
                   }
-                  
+                  // Filtro por estado
+                  if (reportFilters.estado && reportFilters.estado !== 'all') {
+                    filteredCotizaciones = filteredCotizaciones.filter(cot => (cot.status || '').toLowerCase() === reportFilters.estado);
+                  }
+                  // Filtro por fecha inicio
                   if (reportFilters.fechaInicio) {
                     const fechaInicio = new Date(reportFilters.fechaInicio);
                     filteredCotizaciones = filteredCotizaciones.filter(cot => {
@@ -1861,7 +2008,7 @@ const Sells = () => {
                       return fechaCot >= fechaInicio;
                     });
                   }
-                  
+                  // Filtro por fecha fin
                   if (reportFilters.fechaFin) {
                     const fechaFin = new Date(reportFilters.fechaFin);
                     fechaFin.setHours(23, 59, 59, 999);
@@ -1870,13 +2017,6 @@ const Sells = () => {
                       return fechaCot <= fechaFin;
                     });
                   }
-                  
-                  if (reportFilters.estados.length > 0) {
-                    filteredCotizaciones = filteredCotizaciones.filter(cot => 
-                      reportFilters.estados.includes(cot.status)
-                    );
-                  }
-
                   const rows = new Map();
                   for (const cot of filteredCotizaciones) {
                     const cliente = cot.Cliente || cot.cliente || {};
@@ -1885,657 +2025,367 @@ const Sells = () => {
                     const total = Number(cot.total || 0);
                     const anticipo = Number(cot.anticipo || 0);
                     const saldo = total - anticipo;
-                    
+                    const estado = (cot.status || "").toLowerCase();
                     const prev = rows.get(key) || {
                       nombre,
                       pedidos: 0,
                       total: 0,
                       anticipo: 0,
-                      saldo: 0
+                      saldo: 0,
+                      pedidosPendientes: 0,
+                      pedidosPagados: 0,
+                      pedidosEnProceso: 0,
+                      pedidosCancelados: 0,
+                      ultimaVenta: null
                     };
-                    
                     prev.pedidos += 1;
                     prev.total += total;
                     prev.anticipo += anticipo;
                     prev.saldo += saldo;
+                    // Conteo por estado
+                    if (estado === "pendiente") prev.pedidosPendientes += 1;
+                    else if (estado === "pagado") prev.pedidosPagados += 1;
+                    else if (estado === "cancelado") prev.pedidosCancelados += 1;
+                    else if (["en_proceso", "fabricado", "entregado", "espera_material"].includes(estado)) prev.pedidosEnProceso += 1;
+                    // Última venta
+                    const fechaVenta = new Date(cot.fecha_creacion || cot.createdAt);
+                    if (!prev.ultimaVenta || fechaVenta > new Date(prev.ultimaVenta)) {
+                      prev.ultimaVenta = cot.fecha_creacion || cot.createdAt;
+                    }
                     rows.set(key, prev);
                   }
-                  
                   const arr = Array.from(rows.values()).sort((a, b) => b.total - a.total);
-                  
-                  if (arr.length === 0) {
-                    return (
-                      <div style={{ textAlign: "center", padding: "2rem" }}>
-                        <h3>Sin datos disponibles</h3>
-                        <p>No hay ventas que coincidan con los filtros seleccionados</p>
-                      </div>
-                    );
-                  }
-                  
+                  // Siempre renderizar filtros y métricas, aunque arr.length === 0
                   const totales = arr.reduce(
                     (acc, r) => ({
                       pedidos: acc.pedidos + r.pedidos,
                       total: acc.total + r.total,
                       anticipo: acc.anticipo + r.anticipo,
-                      saldo: acc.saldo + r.saldo
+                      saldo: acc.saldo + r.saldo,
+                      pedidosPendientes: acc.pedidosPendientes + r.pedidosPendientes,
+                      pedidosPagados: acc.pedidosPagados + r.pedidosPagados,
+                      pedidosEnProceso: acc.pedidosEnProceso + r.pedidosEnProceso,
+                      pedidosCancelados: acc.pedidosCancelados + r.pedidosCancelados
                     }),
-                    { pedidos: 0, total: 0, anticipo: 0, saldo: 0 }
+                    { pedidos: 0, total: 0, anticipo: 0, saldo: 0, pedidosPendientes: 0, pedidosPagados: 0, pedidosEnProceso: 0, pedidosCancelados: 0 }
                   );
-
+                  const promedioVentasPorCliente = arr.length > 0 ? (totales.total / arr.length) : 0;
+                  const clientesConSaldo = arr.filter(r => r.saldo > 0).length;
+                  const clientesLiquidados = arr.filter(r => r.saldo <= 0).length;
                   return (
-                    <div>
-                      {/* Métricas para impresión */}
-                      <div className="metricas-print">
-                        <div className="metrica-item">
-                          <div className="metrica-valor">{arr.length}</div>
-                          <div className="metrica-label">Clientes Activos</div>
-                        </div>
-                        <div className="metrica-item">
-                          <div className="metrica-valor">{totales.pedidos}</div>
-                          <div className="metrica-label">Total Pedidos</div>
-                        </div>
-                        <div className="metrica-item">
-                          <div className="metrica-valor">${totales.total.toFixed(0)}</div>
-                          <div className="metrica-label">Ventas Totales</div>
-                        </div>
-                        <div className="metrica-item">
-                          <div className="metrica-valor">${totales.saldo.toFixed(0)}</div>
-                          <div className="metrica-label">Saldo Pendiente</div>
-                        </div>
-                      </div>
-
-                      {/* Tabla para impresión */}
-                      <table className="ventas-table">
-                        <thead>
-                          <tr>
-                            <th>Cliente</th>
-                            <th>Pedidos</th>
-                            <th>Total Ventas</th>
-                            <th>Anticipos Pagados</th>
-                            <th>Saldo Pendiente</th>
-                            <th>% Pagado</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {arr.map((r, index) => {
-                            const porcentajePagado = r.total > 0 ? ((r.anticipo / r.total) * 100) : 0;
-                            
-                            return (
-                              <tr key={r.nombre}>
-                                <td style={{ textAlign: "left" }}>{r.nombre}</td>
-                                <td>{r.pedidos}</td>
-                                <td style={{ textAlign: "right" }}>
-                                  ${r.total.toLocaleString('es', {minimumFractionDigits: 2})}
-                                </td>
-                                <td style={{ textAlign: "right" }}>
-                                  ${r.anticipo.toLocaleString('es', {minimumFractionDigits: 2})}
-                                </td>
-                                <td style={{ textAlign: "right" }}>
-                                  ${r.saldo.toLocaleString('es', {minimumFractionDigits: 2})}
-                                </td>
-                                <td>{porcentajePagado.toFixed(0)}%</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-
-                      {/* Totales para impresión */}
-                      <div className="totales-print">
-                        <div className="totales-grid">
-                          <div><strong>TOTALES CONSOLIDADOS</strong></div>
-                          <div>{totales.pedidos} pedidos</div>
-                          <div>${totales.total.toLocaleString('es', {minimumFractionDigits: 2})}</div>
-                          <div>${totales.anticipo.toLocaleString('es', {minimumFractionDigits: 2})}</div>
-                          <div>${totales.saldo.toLocaleString('es', {minimumFractionDigits: 2})}</div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-              {/* Fin del contenido de impresión */}
-
-              {/* Header del reporte */}
-              <div style={{ 
-                background: "linear-gradient(135deg, #a30015, #7b1531)", 
-                color: "white", 
-                padding: "1.5rem", 
-                borderRadius: "8px", 
-                marginBottom: "1.5rem",
-                boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
-              }} className="no-print">
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: "1.4rem", fontWeight: "700", display: "flex", alignItems: "center", color: "white" }}>
-                      <FaChartBar style={{ marginRight: "0.5rem" }} />
-                      Reporte de Ventas
-                    </h2>
-                    <p style={{ margin: "0.3rem 0 0", opacity: 1, fontSize: "0.9rem", color: "white" }}>
-                      Análisis de ventas por cliente
-                    </p>
-                  </div>
-                  {/* acción de imprimir removida por solicitud */}
-                </div>
-              </div>
-
-              {/* Panel de filtros */}
-              <div style={{
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderRadius: "6px",
-                padding: "1rem",
-                marginBottom: "1rem"
-              }} className="no-print">
-                <h3 style={{ 
-                  margin: "0 0 0.75rem 0", 
-                  fontSize: "1rem", 
-                  fontWeight: "600", 
-                  color: "#374151",
-                  display: "flex",
-                  alignItems: "center"
-                }}>
-                  <FaFilter style={{ marginRight: "0.4rem" }} />
-                  Filtros
-                </h3>
-                
-                <div style={{ 
-                  display: "grid", 
-                  gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", 
-                  gap: "1rem" 
-                }}>
-                  {/* Filtro por cliente */}
-                  <div>
-                    <label style={{ 
-                      display: "block", 
-                      fontSize: "0.875rem", 
-                      fontWeight: "600", 
-                      color: "#374151", 
-                      marginBottom: "0.5rem" 
-                    }}>
-                      <FaUser style={{ marginRight: "0.25rem" }} />
-                      Cliente:
-                    </label>
-                    <select
-                      style={{
-                        width: "100%",
-                        padding: "0.5rem",
-                        border: "1px solid #d1d5db",
+                    <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+                      {/* Filtros visuales tipo reporte global */}
+                      <div style={{
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
                         borderRadius: "6px",
-                        fontSize: "0.875rem",
-                        background: "white",
-                        color: "#374151"
-                      }}
-                      value={reportFilters.cliente}
-                      onChange={(e) => setReportFilters({...reportFilters, cliente: e.target.value})}
-                    >
-                      <option value="" style={{color: "#374151", background: "white"}}>Seleccionar cliente específico</option>
-                      <option value="all" style={{color: "#374151", background: "white"}}>Todos los clientes</option>
-                      {clientes.map(cliente => (
-                        <option key={cliente.ID} value={cliente.ID} style={{color: "#374151", background: "white"}}>
-                          {cliente.nombre}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Filtro por fechas */}
-                  <div>
-                    <label style={{ 
-                      display: "block", 
-                      fontSize: "0.875rem", 
-                      fontWeight: "600", 
-                      color: "#374151", 
-                      marginBottom: "0.5rem" 
-                    }}>
-                      <FaCalendarAlt style={{ marginRight: "0.25rem" }} />
-                      Fecha Inicio:
-                    </label>
-                    <input
-                      type="date"
-                      style={{
+                        padding: "1rem",
                         width: "100%",
-                        padding: "0.5rem",
-                        border: "1px solid #d1d5db",
-                        borderRadius: "6px",
-                        fontSize: "0.875rem",
-                        color: "#374151",
-                        background: "white"
-                      }}
-                      value={reportFilters.fechaInicio}
-                      onChange={(e) => setReportFilters({...reportFilters, fechaInicio: e.target.value})}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ 
-                      display: "block", 
-                      fontSize: "0.875rem", 
-                      fontWeight: "600", 
-                      color: "#374151", 
-                      marginBottom: "0.5rem" 
-                    }}>
-                      <FaCalendarAlt style={{ marginRight: "0.25rem" }} />
-                      Fecha Fin:
-                    </label>
-                    <input
-                      type="date"
-                      style={{
-                        width: "100%",
-                        padding: "0.5rem",
-                        border: "1px solid #d1d5db",
-                        borderRadius: "6px",
-                        fontSize: "0.875rem",
-                        color: "#374151",
-                        background: "white"
-                      }}
-                      value={reportFilters.fechaFin}
-                      onChange={(e) => setReportFilters({...reportFilters, fechaFin: e.target.value})}
-                    />
-                  </div>
-                </div>
-
-                {/* Estados a incluir */}
-                <div style={{ marginTop: "1rem" }}>
-                  <label style={{ 
-                    display: "block", 
-                    fontSize: "0.875rem", 
-                    fontWeight: "600", 
-                    color: "#374151", 
-                    marginBottom: "0.75rem" 
-                  }}>
-                    Estados a incluir:
-                  </label>
-                  <div style={{ 
-                    display: "flex", 
-                    flexWrap: "wrap", 
-                    gap: "0.75rem" 
-                  }}>
-                    {['pendiente', 'pagado', 'cancelado', 'en_proceso', 'fabricado', 'espera_material', 'entregado'].map(estado => (
-                      <label key={estado} style={{
+                        marginBottom: "1rem",
                         display: "flex",
-                        alignItems: "center",
-                        gap: "0.5rem",
-                        padding: "0.5rem 0.75rem",
-                        background: reportFilters.estados.includes(estado) ? "#dbeafe" : "white",
-                        border: "1px solid #d1d5db",
-                        borderRadius: "6px",
-                        cursor: "pointer",
-                        fontSize: "0.875rem",
-                        fontWeight: "500",
-                        color: "#374151",
-                        transition: "all 0.2s"
+                        flexWrap: "wrap",
+                        gap: "1rem",
+                        alignItems: "end"
                       }}>
-                        <input
-                          type="checkbox"
-                          checked={reportFilters.estados.includes(estado)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setReportFilters({
-                                ...reportFilters,
-                                estados: [...reportFilters.estados, estado]
-                              });
-                            } else {
-                              setReportFilters({
-                                ...reportFilters,
-                                estados: reportFilters.estados.filter(s => s !== estado)
-                              });
-                            }
-                          }}
-                          style={{ margin: 0, accentColor: "#a30015" }}
-                        />
-                        {renderStatus(estado)}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {(() => {
-                // Filtrar cotizaciones según criterios
-                let filteredCotizaciones = [...cotizaciones];
-                
-                // Aplicar filtros
-                if (reportFilters.cliente && reportFilters.cliente !== 'all') {
-                  filteredCotizaciones = filteredCotizaciones.filter(
-                    cot => Number(cot.ID_cliente) === Number(reportFilters.cliente)
-                  );
-                }
-                
-                if (reportFilters.fechaInicio) {
-                  const fechaInicio = new Date(reportFilters.fechaInicio);
-                  filteredCotizaciones = filteredCotizaciones.filter(cot => {
-                    const fechaCot = new Date(cot.fecha_creacion || cot.createdAt);
-                    return fechaCot >= fechaInicio;
-                  });
-                }
-                
-                if (reportFilters.fechaFin) {
-                  const fechaFin = new Date(reportFilters.fechaFin);
-                  fechaFin.setHours(23, 59, 59, 999);
-                  filteredCotizaciones = filteredCotizaciones.filter(cot => {
-                    const fechaCot = new Date(cot.fecha_creacion || cot.createdAt);
-                    return fechaCot <= fechaFin;
-                  });
-                }
-                
-                if (reportFilters.estados.length > 0) {
-                  filteredCotizaciones = filteredCotizaciones.filter(cot => 
-                    reportFilters.estados.includes(cot.status)
-                  );
-                }
-
-                const rows = new Map();
-                for (const cot of filteredCotizaciones) {
-                  const cliente = cot.Cliente || cot.cliente || {};
-                  const key = cliente.ID || cliente.id || cliente.nombre || "Desconocido";
-                  const nombre = cliente.nombre || "Desconocido";
-                  const total = Number(cot.total || 0);
-                  const anticipo = Number(cot.anticipo || 0);
-                  const saldo = total - anticipo;
-                  const estado = (cot.status || "").toLowerCase();
-                  
-                  const prev = rows.get(key) || {
-                    nombre,
-                    pedidos: 0,
-                    total: 0,
-                    anticipo: 0,
-                    saldo: 0,
-                    pedidosPendientes: 0,
-                    pedidosPagados: 0,
-                    pedidosEnProceso: 0,
-                    pedidosCancelados: 0,
-                    ultimaVenta: null
-                  };
-                  
-                  prev.pedidos += 1;
-                  prev.total += total;
-                  prev.anticipo += anticipo;
-                  prev.saldo += saldo;
-                  
-                  // Conteo por estado
-                  if (estado === "pendiente") prev.pedidosPendientes += 1;
-                  else if (estado === "pagado") prev.pedidosPagados += 1;
-                  else if (estado === "cancelado") prev.pedidosCancelados += 1;
-                  else if (["en_proceso", "fabricado", "entregado", "espera_material"].includes(estado)) prev.pedidosEnProceso += 1;
-                  
-                  // Última venta
-                  const fechaVenta = new Date(cot.fecha_creacion || cot.createdAt);
-                  if (!prev.ultimaVenta || fechaVenta > new Date(prev.ultimaVenta)) {
-                    prev.ultimaVenta = cot.fecha_creacion || cot.createdAt;
-                  }
-                  
-                  rows.set(key, prev);
-                }
-                
-                const arr = Array.from(rows.values()).sort((a, b) => b.total - a.total);
-                
-                if (arr.length === 0) {
-                  return (
-                    <div style={{ 
-                      textAlign: "center", 
-                      padding: "4rem 2rem",
-                      color: "#6b7280",
-                      background: "#f9fafb",
-                      borderRadius: "8px",
-                      border: "2px dashed #d1d5db"
-                    }}>
-                      <FaChartBar size={48} style={{ marginBottom: "1rem", opacity: 0.4 }} />
-                      <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.25rem", fontWeight: "600" }}>Sin datos disponibles</h3>
-                      <p style={{ margin: 0, fontSize: "1rem" }}>No hay ventas que coincidan con los filtros seleccionados</p>
-                    </div>
-                  );
-                }
-                
-                const totales = arr.reduce(
-                  (acc, r) => ({
-                    pedidos: acc.pedidos + r.pedidos,
-                    total: acc.total + r.total,
-                    anticipo: acc.anticipo + r.anticipo,
-                    saldo: acc.saldo + r.saldo,
-                    pedidosPendientes: acc.pedidosPendientes + r.pedidosPendientes,
-                    pedidosPagados: acc.pedidosPagados + r.pedidosPagados,
-                    pedidosEnProceso: acc.pedidosEnProceso + r.pedidosEnProceso,
-                    pedidosCancelados: acc.pedidosCancelados + r.pedidosCancelados
-                  }),
-                  { pedidos: 0, total: 0, anticipo: 0, saldo: 0, pedidosPendientes: 0, pedidosPagados: 0, pedidosEnProceso: 0, pedidosCancelados: 0 }
-                );
-
-                const promedioVentasPorCliente = arr.length > 0 ? (totales.total / arr.length) : 0;
-                const clientesConSaldo = arr.filter(r => r.saldo > 0).length;
-                const clientesLiquidados = arr.filter(r => r.saldo <= 0).length;
-
-                return (
-                  <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-                    {/* Métricas destacadas */}
-                    <div style={{ 
-                      display: "grid", 
-                      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", 
-                      gap: "0.75rem", 
-                      marginBottom: "1rem" 
-                    }}>
-                      <div style={{ 
-                        background: "#ffffff", 
-                        padding: "0.75rem", 
-                        borderRadius: "6px", 
-                        border: "2px solid #a30015",
-                        textAlign: "center",
-                        boxShadow: "0 2px 6px rgba(163, 0, 21, 0.1)"
-                      }}>
-                        <div style={{ color: "#a30015", fontSize: "1.8rem", fontWeight: "700" }}>
-                          {arr.length}
+                        <div style={{ minWidth: 180 }}>
+                          <label style={{ fontWeight: 600, color: "#374151", fontSize: "0.95rem", marginBottom: 4, display: 'block' }}>Cliente:</label>
+                          <select
+                            value={reportFilters.cliente || 'all'}
+                            onChange={e => setReportFilters({ ...reportFilters, cliente: e.target.value })}
+                            style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #ccc', fontSize: '1rem' }}
+                          >
+                            <option value="all">Todos</option>
+                            {[...new Set(cotizaciones.map(cot => (cot.Cliente?.nombre || cot.cliente?.nombre || "Desconocido")))].map(nombre => (
+                              <option key={nombre} value={nombre}>{nombre}</option>
+                            ))}
+                          </select>
                         </div>
-                        <div style={{ color: "#333", fontSize: "0.9rem", fontWeight: "600" }}>
-                          Clientes Activos
+                        <div style={{ minWidth: 180 }}>
+                          <label style={{ fontWeight: 600, color: "#374151", fontSize: "0.95rem", marginBottom: 4, display: 'block' }}>Estado:</label>
+                          <select
+                            value={reportFilters.estado || 'all'}
+                            onChange={e => setReportFilters({ ...reportFilters, estado: e.target.value })}
+                            style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #ccc', fontSize: '1rem' }}
+                          >
+                            <option value="all">Todos</option>
+                            <option value="pendiente">Pendiente</option>
+                            <option value="pagado">Pagado</option>
+                            <option value="cancelado">Cancelado</option>
+                            <option value="en_proceso">En proceso</option>
+                            <option value="fabricado">Fabricado</option>
+                            <option value="espera_material">En espera de material</option>
+                            <option value="entregado">Entregado</option>
+                          </select>
+                        </div>
+                        <div style={{ minWidth: 180 }}>
+                          <label style={{ fontWeight: 600, color: "#374151", fontSize: "0.95rem", marginBottom: 4, display: 'block' }}>Fecha inicio:</label>
+                          <input
+                            type="date"
+                            value={reportFilters.fechaInicio || ''}
+                            onChange={e => setReportFilters({ ...reportFilters, fechaInicio: e.target.value })}
+                            style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #ccc', fontSize: '1rem' }}
+                          />
+                        </div>
+                        <div style={{ minWidth: 180 }}>
+                          <label style={{ fontWeight: 600, color: "#374151", fontSize: "0.95rem", marginBottom: 4, display: 'block' }}>Fecha fin:</label>
+                          <input
+                            type="date"
+                            value={reportFilters.fechaFin || ''}
+                            onChange={e => setReportFilters({ ...reportFilters, fechaFin: e.target.value })}
+                            style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #ccc', fontSize: '1rem' }}
+                          />
                         </div>
                       </div>
-                      
-                      <div style={{ 
-                        background: "#ffffff", 
-                        padding: "0.75rem", 
-                        borderRadius: "6px", 
-                        border: "2px solid #7b1531",
-                        textAlign: "center",
-                        boxShadow: "0 2px 6px rgba(123, 21, 49, 0.1)"
-                      }}>
-                        <div style={{ color: "#7b1531", fontSize: "1.8rem", fontWeight: "700" }}>
-                          ${promedioVentasPorCliente.toFixed(0)}
-                        </div>
-                        <div style={{ color: "#333", fontSize: "0.9rem", fontWeight: "600" }}>
-                          Promedio por Cliente
-                        </div>
-                      </div>
-                      
-                      <div style={{ 
-                        background: "#ffffff", 
-                        padding: "0.75rem", 
-                        borderRadius: "6px", 
-                        border: "2px solid #d4a574",
-                        textAlign: "center",
-                        boxShadow: "0 2px 6px rgba(212, 165, 116, 0.1)"
-                      }}>
-                        <div style={{ color: "#b8860b", fontSize: "1.8rem", fontWeight: "700" }}>
-                          {clientesConSaldo}
-                        </div>
-                        <div style={{ color: "#333", fontSize: "0.9rem", fontWeight: "600" }}>
-                          Con Saldo Pendiente
-                        </div>
-                      </div>
-                      
-                      <div style={{ 
-                        background: "#ffffff", 
-                        padding: "0.75rem", 
-                        borderRadius: "6px", 
-                        border: "2px solid #2d7a2d",
-                        textAlign: "center",
-                        boxShadow: "0 2px 6px rgba(45, 122, 45, 0.1)"
-                      }}>
-                        <div style={{ color: "#2d7a2d", fontSize: "1.8rem", fontWeight: "700" }}>
-                          {clientesLiquidados}
-                        </div>
-                        <div style={{ color: "#333", fontSize: "0.9rem", fontWeight: "600" }}>
-                          Totalmente Liquidados
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Tabla de datos */}
-                    <div style={{ flex: 1, overflowY: "auto", border: "1px solid #e9ecef", borderRadius: "6px" }}>
-                      <table className="ventas-table" style={{ minWidth: 800, margin: 0 }}>
-                        <thead style={{ background: "linear-gradient(135deg, #a30015, #7b1531)", color: "white", position: "sticky", top: 0, zIndex: 1 }}>
-                          <tr>
-                            <th style={{ textAlign: "left", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>Cliente</th>
-                            <th style={{ textAlign: "center", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>
-                              <FaList size={14} style={{ marginRight: "0.25rem" }} />
-                              Total Pedidos
-                            </th>
-                            <th style={{ textAlign: "center", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>
-                              <div>Pendientes</div>
-                              <div style={{ fontSize: "0.7rem", color: "#ffeb99" }}>En Proceso</div>
-                            </th>
-                            <th style={{ textAlign: "right", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>
-                              <FaMoneyCheckAlt size={14} style={{ marginRight: "0.25rem" }} />
-                              Total Ventas
-                            </th>
-                            <th style={{ textAlign: "right", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>Anticipos Pagados</th>
-                            <th style={{ textAlign: "right", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>Saldo Pendiente</th>
-                            <th style={{ textAlign: "center", padding: "1rem 0.75rem", color: "white", fontWeight: "600" }}>% Pagado</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {arr.map((r, index) => {
-                            const porcentajePagado = r.total > 0 ? ((r.anticipo / r.total) * 100) : 0;
-                            const isLiquidado = r.saldo <= 0 && r.total > 0;
-                            
-                            return (
-                              <tr 
-                                key={r.nombre}
-                                style={{ 
-                                  background: index % 2 === 0 ? "#fff" : "#f8f9fa",
-                                  borderBottom: "1px solid #e9ecef"
-                                }}
-                              >
-                                <td style={{ padding: "0.75rem", fontWeight: "600" }}>
-                                  <div style={{ display: "flex", alignItems: "center" }}>
-                                    <FaUser size={12} style={{ marginRight: "0.5rem", color: "#a30015" }} />
-                                    {r.nombre}
-                                  </div>
-                                </td>
-                                <td style={{ textAlign: "center", padding: "0.75rem" }}>
-                                  <span style={{ 
-                                    background: "#e3f2fd", 
-                                    color: "#1976d2", 
-                                    padding: "0.25rem 0.5rem", 
-                                    borderRadius: "12px",
-                                    fontSize: "0.85rem",
-                                    fontWeight: "600"
-                                  }}>
-                                    {r.pedidos}
-                                  </span>
-                                </td>
-                                <td style={{ textAlign: "center", padding: "0.75rem" }}>
-                                  <div style={{ fontSize: "0.85rem" }}>
-                                    <span style={{ 
-                                      color: "#ffc107", 
-                                      fontWeight: "600",
-                                      display: "block"
-                                    }}>
-                                      {r.pedidosPendientes}
-                                    </span>
-                                    <span style={{ 
-                                      color: "#28a745", 
-                                      fontWeight: "600"
-                                    }}>
-                                      {r.pedidosEnProceso}
-                                    </span>
-                                  </div>
-                                </td>
-                                <td style={{ textAlign: "right", padding: "0.75rem", fontWeight: "700" }}>
-                                  ${r.total.toLocaleString('es', {minimumFractionDigits: 2})}
-                                </td>
-                                <td style={{ textAlign: "right", padding: "0.75rem", color: "#28a745", fontWeight: "600" }}>
-                                  ${r.anticipo.toLocaleString('es', {minimumFractionDigits: 2})}
-                                </td>
-                                <td style={{ 
-                                  textAlign: "right", 
-                                  padding: "0.75rem", 
-                                  color: r.saldo > 0 ? "#dc3545" : "#28a745",
-                                  fontWeight: "600"
-                                }}>
-                                  ${r.saldo.toLocaleString('es', {minimumFractionDigits: 2})}
-                                </td>
-                                <td style={{ textAlign: "center", padding: "0.75rem" }}>
-                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    <div style={{ 
-                                      width: "40px", 
-                                      height: "8px", 
-                                      background: "#e9ecef", 
-                                      borderRadius: "4px", 
-                                      overflow: "hidden",
-                                      marginRight: "0.5rem"
-                                    }}>
-                                      <div style={{ 
-                                        width: `${Math.min(porcentajePagado, 100)}%`, 
-                                        height: "100%", 
-                                        background: isLiquidado ? "#28a745" : porcentajePagado >= 70 ? "#ffc107" : "#dc3545",
-                                        transition: "width 0.3s ease"
-                                      }} />
-                                    </div>
-                                    <span style={{ 
-                                      fontSize: "0.8rem", 
-                                      fontWeight: "600",
-                                      color: isLiquidado ? "#28a745" : porcentajePagado >= 70 ? "#ffc107" : "#dc3545"
-                                    }}>
-                                      {porcentajePagado.toFixed(0)}%
-                                    </span>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Fila de totales */}
-                    <div style={{ 
-                      background: "linear-gradient(135deg, #a30015, #7b1531)", 
-                      padding: "1rem", 
-                      borderRadius: "8px", 
-                      marginTop: "1rem",
-                      border: "2px solid #a30015",
-                      color: "white"
-                    }}>
+                      {/* Métricas destacadas */}
                       <div style={{ 
                         display: "grid", 
-                        gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr", 
-                        gap: "1rem", 
-                        alignItems: "center",
-                        fontWeight: "700"
+                        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", 
+                        gap: "0.75rem", 
+                        marginBottom: "1rem" 
                       }}>
-                        <div style={{ color: "white", fontSize: "1.1rem" }}>
-                          TOTALES CONSOLIDADOS
+                        <div style={{ 
+                          background: "linear-gradient(135deg, #a30015, #7b1531)",
+                          padding: "0.75rem", 
+                          borderRadius: "6px", 
+                          border: "2px solid #a30015",
+                          textAlign: "center",
+                          boxShadow: "0 2px 6px rgba(163, 0, 21, 0.1)"
+                        }}>
+                          <div style={{ color: "#fff", fontSize: "1.8rem", fontWeight: "700" }}>
+                            {arr.length}
+                          </div>
+                          <div style={{ color: "#fff", fontSize: "0.9rem", fontWeight: "600" }}>
+                            Clientes Activos
+                          </div>
                         </div>
-                        <div style={{ textAlign: "center", color: "white" }}>
-                          {totales.pedidos} pedidos
+                        <div style={{ 
+                          background: "linear-gradient(135deg, #7b1531, #a30015)",
+                          padding: "0.75rem", 
+                          borderRadius: "6px", 
+                          border: "2px solid #7b1531",
+                          textAlign: "center",
+                          boxShadow: "0 2px 6px rgba(123, 21, 49, 0.1)"
+                        }}>
+                          <div style={{ color: "#fff", fontSize: "1.8rem", fontWeight: "700" }}>
+                            ${promedioVentasPorCliente.toFixed(0)}
+                          </div>
+                          <div style={{ color: "#fff", fontSize: "0.9rem", fontWeight: "600" }}>
+                            Promedio por Cliente
+                          </div>
                         </div>
-                        <div style={{ textAlign: "center", fontSize: "0.9rem" }}>
-                          <div style={{ color: "#ffeb99" }}>{totales.pedidosPendientes} pend.</div>
-                          <div style={{ color: "#90ee90" }}>{totales.pedidosEnProceso} proc.</div>
+                        <div style={{ 
+                          background: "linear-gradient(135deg, #d4a574, #b8860b)",
+                          padding: "0.75rem", 
+                          borderRadius: "6px", 
+                          border: "2px solid #d4a574",
+                          textAlign: "center",
+                          boxShadow: "0 2px 6px rgba(212, 165, 116, 0.1)"
+                        }}>
+                          <div style={{ color: "#fff", fontSize: "1.8rem", fontWeight: "700" }}>
+                            {clientesConSaldo}
+                          </div>
+                          <div style={{ color: "#fff", fontSize: "0.9rem", fontWeight: "600" }}>
+                            Con Saldo Pendiente
+                          </div>
                         </div>
-                        <div style={{ textAlign: "right", color: "white" }}>
-                          ${totales.total.toLocaleString('es', {minimumFractionDigits: 2})}
+                        <div style={{ 
+                          background: "linear-gradient(135deg, #2d7a2d, #90ee90)",
+                          padding: "0.75rem", 
+                          borderRadius: "6px", 
+                          border: "2px solid #2d7a2d",
+                          textAlign: "center",
+                          boxShadow: "0 2px 6px rgba(45, 122, 45, 0.1)"
+                        }}>
+                          <div style={{ color: "#fff", fontSize: "1.8rem", fontWeight: "700" }}>
+                            {clientesLiquidados}
+                          </div>
+                          <div style={{ color: "#fff", fontSize: "0.9rem", fontWeight: "600" }}>
+                            Totalmente Liquidados
+                          </div>
                         </div>
-                        <div style={{ textAlign: "right", color: "#90ee90" }}>
-                          ${totales.anticipo.toLocaleString('es', {minimumFractionDigits: 2})}
-                        </div>
-                        <div style={{ textAlign: "right", color: totales.saldo > 0 ? "#ffb3b3" : "#90ee90" }}>
-                          ${totales.saldo.toLocaleString('es', {minimumFractionDigits: 2})}
+                      </div>
+                      {/* Tabla de datos o mensaje de sin datos */}
+                      <div style={{ flex: 1, overflowY: "auto", border: "1px solid #e9ecef", borderRadius: "6px" }}>
+                        {arr.length === 0 ? (
+                          <div style={{ 
+                            textAlign: "center", 
+                            padding: "4rem 2rem",
+                            color: "#6b7280",
+                            background: "#f9fafb",
+                            borderRadius: "8px",
+                            border: "2px dashed #d1d5db"
+                          }}>
+                            <FaChartBar size={48} style={{ marginBottom: "1rem", opacity: 0.4 }} />
+                            <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.25rem", fontWeight: "600" }}>Sin datos disponibles</h3>
+                            <p style={{ margin: 0, fontSize: "1rem" }}>No hay ventas que coincidan con los filtros seleccionados</p>
+                          </div>
+                        ) : (
+                          <table className="ventas-table" style={{ minWidth: 800, margin: 0 }}>
+                            <thead style={{ background: "linear-gradient(135deg, #a30015, #7b1531)", color: "white", position: "sticky", top: 0, zIndex: 1 }}>
+                              <tr>
+                                <th style={{ textAlign: "left", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>Cliente</th>
+                                <th style={{ textAlign: "center", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>
+                                  <FaList size={14} style={{ marginRight: "0.25rem" }} />
+                                  Total Pedidos
+                                </th>
+                                <th style={{ textAlign: "center", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>
+                                  <div>Pendientes</div>
+                                  <div style={{ fontSize: "0.7rem", color: "#a30015" }}>En Proceso</div>
+                                </th>
+                                <th style={{ textAlign: "right", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>
+                                  <FaMoneyCheckAlt size={14} style={{ marginRight: "0.25rem" }} />
+                                  Total Ventas
+                                </th>
+                                <th style={{ textAlign: "right", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>Anticipos Pagados</th>
+                                <th style={{ textAlign: "right", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>Saldo Pendiente</th>
+                                <th style={{ textAlign: "center", padding: "1rem 0.75rem", color: "#111", fontWeight: "600" }}>% Pagado</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {arr.map((r, index) => {
+                                const porcentajePagado = r.total > 0 ? ((r.anticipo / r.total) * 100) : 0;
+                                const isLiquidado = r.saldo <= 0 && r.total > 0;
+                                return (
+                                  <tr 
+                                    key={r.nombre}
+                                    style={{ 
+                                      background: index % 2 === 0 ? "#fff" : "#f8f9fa",
+                                      borderBottom: "1px solid #e9ecef"
+                                    }}
+                                  >
+                                    <td style={{ padding: "0.75rem", fontWeight: "600" }}>
+                                      <div style={{ display: "flex", alignItems: "center" }}>
+                                        <FaUser size={12} style={{ marginRight: "0.5rem", color: "#a30015" }} />
+                                        {r.nombre}
+                                      </div>
+                                    </td>
+                                    <td style={{ textAlign: "center", padding: "0.75rem" }}>
+                                      <span style={{ 
+                                        background: "#e3f2fd", 
+                                        color: "#1976d2", 
+                                        padding: "0.25rem 0.5rem", 
+                                        borderRadius: "12px",
+                                        fontSize: "0.85rem",
+                                        fontWeight: "600"
+                                      }}>
+                                        {r.pedidos}
+                                      </span>
+                                    </td>
+                                    <td style={{ textAlign: "center", padding: "0.75rem" }}>
+                                      <div style={{ fontSize: "0.85rem" }}>
+                                        <span style={{ 
+                                          color: "#ffc107", 
+                                          fontWeight: "600",
+                                          display: "block"
+                                        }}>
+                                          {r.pedidosPendientes}
+                                        </span>
+                                        <span style={{ 
+                                          color: "#28a745", 
+                                          fontWeight: "600"
+                                        }}>
+                                          {r.pedidosEnProceso}
+                                        </span>
+                                      </div>
+                                    </td>
+                                    <td style={{ textAlign: "right", padding: "0.75rem", fontWeight: "700" }}>
+                                      ${r.total.toLocaleString('es', {minimumFractionDigits: 2})}
+                                    </td>
+                                    <td style={{ textAlign: "right", padding: "0.75rem", color: "#28a745", fontWeight: "600" }}>
+                                      ${r.anticipo.toLocaleString('es', {minimumFractionDigits: 2})}
+                                    </td>
+                                    <td style={{ 
+                                      textAlign: "right", 
+                                      padding: "0.75rem", 
+                                      color: r.saldo > 0 ? "#dc3545" : "#28a745",
+                                      fontWeight: "600"
+                                    }}>
+                                      ${r.saldo.toLocaleString('es', {minimumFractionDigits: 2})}
+                                    </td>
+                                    <td style={{ textAlign: "center", padding: "0.75rem" }}>
+                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                        <div style={{ 
+                                          width: "40px", 
+                                          height: "8px", 
+                                          background: "#e9ecef", 
+                                          borderRadius: "4px", 
+                                          overflow: "hidden",
+                                          marginRight: "0.5rem"
+                                        }}>
+                                          <div style={{ 
+                                            width: `${Math.min(porcentajePagado, 100)}%`, 
+                                            height: "100%", 
+                                            background: isLiquidado ? "#28a745" : porcentajePagado >= 70 ? "#ffc107" : "#dc3545",
+                                            transition: "width 0.3s ease"
+                                          }} />
+                                        </div>
+                                        <span style={{ 
+                                          fontSize: "0.8rem", 
+                                          fontWeight: "600",
+                                          color: isLiquidado ? "#28a745" : porcentajePagado >= 70 ? "#ffc107" : "#dc3545"
+                                        }}>
+                                          {porcentajePagado.toFixed(0)}%
+                                        </span>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                      {/* Fila de totales */}
+                      <div style={{ 
+                        background: "linear-gradient(135deg, #a30015, #7b1531)", 
+                        padding: "1rem", 
+                        borderRadius: "8px", 
+                        marginTop: "1rem",
+                        border: "2px solid #a30015",
+                        color: "white"
+                      }}>
+                        <div style={{ 
+                          display: "grid", 
+                          gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr", 
+                          gap: "1rem", 
+                          alignItems: "center",
+                          fontWeight: "700"
+                        }}>
+                          <div style={{ color: "white", fontSize: "1.1rem" }}>
+                            TOTALES CONSOLIDADOS
+                          </div>
+                          <div style={{ textAlign: "center", color: "white" }}>
+                            {totales.pedidos} pedidos
+                          </div>
+                          <div style={{ textAlign: "center", fontSize: "0.9rem" }}>
+                            <div style={{ color: "#ffeb99" }}>{totales.pedidosPendientes} pend.</div>
+                            <div style={{ color: "#90ee90" }}>{totales.pedidosEnProceso} proc.</div>
+                          </div>
+                          <div style={{ textAlign: "right", color: "white" }}>
+                            ${totales.total.toLocaleString('es', {minimumFractionDigits: 2})}
+                          </div>
+                          <div style={{ textAlign: "right", color: "#90ee90" }}>
+                            ${totales.anticipo.toLocaleString('es', {minimumFractionDigits: 2})}
+                          </div>
+                          <div style={{ textAlign: "right", color: totales.saldo > 0 ? "#ffb3b3" : "#90ee90" }}>
+                            ${totales.saldo.toLocaleString('es', {minimumFractionDigits: 2})}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                );
+                  );
+                } catch (err) {
+                  console.error('Error en el modal de reporte avanzado:', err);
+                  return (
+                    <div style={{ color: '#a30015', padding: 32, textAlign: 'center', fontWeight: 700 }}>
+                      Ocurrió un error al mostrar el reporte avanzado.<br />
+                      Por favor revisa los filtros o contacta al administrador.<br />
+                      <button className="cancel-btn" style={{ marginTop: 24 }} onClick={() => setReportOpen(false)}>
+                        Cerrar
+                      </button>
+                    </div>
+                  );
+                }
               })()}
               
               <div className="modal-btn-row no-print" style={{ marginTop: "1.5rem", justifyContent: "space-between" }}>
@@ -3405,9 +3255,12 @@ const Sells = () => {
                             const prod = productos.find(
                               (pr) => pr.ID === p.productoId
                             );
+                            const tipoMedida = getLineaTipoMedida(p);
+                            const unidadLabel =
+                              tipoMedida === "piezas" ? "piezas" : "m²";
                             return (
                               <li key={i} style={{ marginBottom: 2 }}>
-                                {prod?.nombre || ""} • {p.cantidad} m²
+                                {prod?.nombre || ""} • {p.cantidad} {unidadLabel}
                               </li>
                             );
                           })}
@@ -3737,6 +3590,44 @@ const Sells = () => {
                 </div>
               )}
 
+              {modalInfo && (
+                <div
+                  style={{
+                    background: "#e8f1ff",
+                    color: "#1a4b8c",
+                    padding: "10px 12px",
+                    borderRadius: 6,
+                    marginBottom: 12,
+                    fontSize: "0.88rem",
+                    border: "1px solid rgba(26, 75, 140, 0.25)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {modalInfo}
+                </div>
+              )}
+              {/* Advertencia si está entregado y no pagado al 100% */}
+              {modalOpen === "edit" && form.status === "entregado" && Number(form.anticipo || 0) < Number(form.total || 0) && (
+                <div
+                  style={{
+                    background: "#fff3cd",
+                    color: "#856404",
+                    padding: "10px 12px",
+                    borderRadius: 6,
+                    marginBottom: 12,
+                    fontSize: "0.95rem",
+                    border: "1px solid #ffeeba",
+                    fontWeight: 700,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span style={{fontSize: "1.2em", marginRight: 6}}>⚠️</span>
+                  Esta cotización ya fue <b>entregada</b> pero <b>no está pagada al 100%</b>. Es necesario completar el pago.
+                </div>
+              )}
+
               <form
                 onSubmit={modalOpen === "edit" ? handleEdit : handleAdd}
                 className="user-form"
@@ -3837,8 +3728,9 @@ const Sells = () => {
                   <div
                     style={{
                       display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
+                      flexDirection: "column",
+                      gap: 6,
+                      alignItems: "flex-start",
                       marginBottom: 8,
                       paddingBottom: 8,
                       borderBottom: "2px solid #7b1531",
@@ -3847,11 +3739,32 @@ const Sells = () => {
                     <h3 style={{ margin: 0, fontSize: "0.95rem", fontWeight: 700, color: "#7b1531" }}>
                       Productos agregados
                     </h3>
+                    {productosBloqueados && (
+                      <span
+                        style={{
+                          fontSize: "0.75rem",
+                          fontWeight: 600,
+                          color: "#a05211",
+                          background: "#fff1e6",
+                          border: "1px solid rgba(160, 82, 17, 0.25)",
+                          borderRadius: 999,
+                          padding: "4px 10px",
+                        }}
+                      >
+                        Bloqueado por estado no pendiente
+                      </span>
+                    )}
                     <button
                       type="button"
                       className="add-btn"
                       onClick={handleAddProducto}
-                      style={{ padding: "6px 10px", fontSize: "0.85rem" }}
+                      disabled={productosBloqueados}
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: "0.85rem",
+                        opacity: productosBloqueados ? 0.5 : 1,
+                        cursor: productosBloqueados ? "not-allowed" : "pointer",
+                      }}
                     >
                       <FaPlus style={{ marginRight: 4 }} /> Agregar
                     </button>
@@ -3881,7 +3794,46 @@ const Sells = () => {
                     ) : (
                       (form.productos || []).map((p, i) => {
                         const productoId = p.productoId || p.ID_producto;
-                        const prodMatch = productos.find((pr) => pr.ID === productoId);
+                        const info = getProductoInfo(productoId);
+                        const prodMatch = info.prod;
+                        const unidadLinea = getLineaTipoMedida(p);
+                        const unidadLabel = unidadLinea === "piezas" ? "piezas" : "m²";
+                        const cantidadBase =
+                          p.cantidad === "" || p.cantidad === null || p.cantidad === undefined
+                            ? ""
+                            : Number(p.cantidad);
+                        const cantidadNumero =
+                          typeof cantidadBase === "number" && !Number.isNaN(cantidadBase)
+                            ? cantidadBase
+                            : Number(cantidadBase);
+                        const valueForInput =
+                          cantidadBase === "" || Number.isNaN(cantidadNumero)
+                            ? ""
+                            : cantidadNumero;
+                        const minValue = unidadLinea === "piezas" ? "1" : "0.01";
+                        const stepValue = unidadLinea === "piezas" ? "1" : "0.01";
+                        const stockLabel =
+                          unidadLinea === "piezas"
+                            ? typeof info.stockPiezas === "number" && Number.isFinite(info.stockPiezas)
+                              ? `${info.stockPiezas.toLocaleString("es-MX")} pzs en stock`
+                              : "Stock no disponible"
+                            : typeof info.stockM2 === "number" && Number.isFinite(info.stockM2)
+                            ? `${info.stockM2.toFixed(2)} m² en stock`
+                            : "Stock no disponible";
+                        const precioLabel =
+                          typeof info.precio === "number" && info.precio > 0
+                            ? `$${info.precio.toFixed(2)} por ${unidadLabel === "piezas" ? "pieza" : "m²"}`
+                            : "Precio no definido";
+                        const conversionLabel =
+                          Number.isFinite(cantidadNumero) &&
+                          cantidadNumero > 0 &&
+                          typeof info.medidaPorUnidad === "number" &&
+                          info.medidaPorUnidad > 0
+                            ? unidadLinea === "piezas"
+                              ? `≈ ${(cantidadNumero * info.medidaPorUnidad).toFixed(2)} m²`
+                              : `≈ ${(cantidadNumero / info.medidaPorUnidad).toFixed(2)} pzs`
+                            : null;
+
                         return (
                           <div
                             key={`prod-${i}`}
@@ -3897,7 +3849,6 @@ const Sells = () => {
                               alignItems: "flex-start",
                             }}
                           >
-                            {/* Imagen del producto */}
                             {prodMatch?.imagen && (
                               <div
                                 style={{
@@ -3926,45 +3877,102 @@ const Sells = () => {
                             <div>
                               <label style={{ fontSize: "0.75rem", color: "#666" }}>Producto</label>
                               <select
+                                id={`prod-${i}-productoId`}
                                 className="user-input"
                                 value={String(productoId || "")}
                                 onChange={(e) =>
                                   handleProductoChange(i, "productoId", Number(e.target.value))
                                 }
-                                style={{ fontSize: "0.85rem", padding: "6px" }}
+                                disabled={productosBloqueados}
+                                style={{
+                                  fontSize: "0.85rem",
+                                  padding: "6px",
+                                  backgroundColor: productosBloqueados ? "#f3f4f6" : undefined,
+                                  cursor: productosBloqueados ? "not-allowed" : "pointer",
+                                  opacity: productosBloqueados ? 0.8 : 1,
+                                }}
                               >
-                                <option value="">Selecciona…</option>
-                                {(productos || [])
-                                  .filter((pr) => pr.cantidad_m2 != null && pr.medida_por_unidad != null)
-                                  .map((pr) => (
+                                <option value="">Seleccionar…</option>
+                                {(productos || []).map((pr) => {
+                                  const unidad = pr.unidadMedida || resolveUnidadMedidaProducto(pr);
+                                  const esPiezas = unidad === "piezas";
+                                  const stockValor = esPiezas
+                                    ? Number(pr.cantidad_piezas ?? pr.stockPiezas ?? 0)
+                                    : Number(pr.cantidad_m2 ?? 0);
+                                  const stockDisponible = Number.isFinite(stockValor)
+                                    ? esPiezas
+                                      ? `${stockValor.toLocaleString("es-MX")} pzs`
+                                      : `${stockValor.toFixed(2)} m²`
+                                    : esPiezas
+                                    ? "pzs sin dato"
+                                    : "m² sin dato";
+                                  return (
                                     <option key={pr.ID} value={String(pr.ID)}>
-                                      {pr.nombre} ({pr.cantidad_m2} m²)
+                                      {pr.nombre} ({stockDisponible})
                                     </option>
-                                  ))}
+                                  );
+                                })}
                               </select>
                               {prodMatch && (
-                                <div style={{ fontSize: "0.75rem", color: "#999", marginTop: 4 }}>
-                                  {prodMatch.nombre}
+                                <div
+                                  style={{
+                                    fontSize: "0.75rem",
+                                    color: "#666",
+                                    marginTop: 6,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 2,
+                                  }}
+                                >
+                                  <span>{precioLabel}</span>
+                                  <span>{stockLabel}</span>
+                                  {unidadLinea === "piezas" &&
+                                    typeof info.medidaPorUnidad === "number" &&
+                                    info.medidaPorUnidad > 0 && (
+                                      <span>{`Equivalencia: ${info.medidaPorUnidad} m² por pieza`}</span>
+                                    )}
                                 </div>
                               )}
                             </div>
                             <div>
-                              <label style={{ fontSize: "0.75rem", color: "#666" }}>m² totales</label>
+                              <label style={{ fontSize: "0.75rem", color: "#666" }}>
+                                Cantidad ({unidadLabel})
+                              </label>
                               <input
+                                id={`prod-${i}-cantidad`}
                                 className="user-input"
                                 type="number"
-                                min="0.01"
-                                step="0.01"
-                                value={p.cantidad ?? ""}
+                                min={minValue}
+                                step={stepValue}
+                                value={valueForInput}
                                 onChange={(e) => handleProductoChange(i, "cantidad", e.target.value)}
-                                style={{ fontSize: "0.85rem", padding: "6px" }}
+                                disabled={productosBloqueados}
+                                style={{
+                                  fontSize: "0.85rem",
+                                  padding: "6px",
+                                  backgroundColor: productosBloqueados ? "#f3f4f6" : undefined,
+                                  cursor: productosBloqueados ? "not-allowed" : "text",
+                                }}
                               />
+                              {conversionLabel && (
+                                <div style={{ fontSize: "0.7rem", color: "#555", marginTop: 4 }}>
+                                  {conversionLabel}
+                                </div>
+                              )}
                             </div>
                             <button
                               type="button"
                               className="delete-btn"
                               onClick={() => handleRemoveProducto(i)}
-                              style={{ padding: "6px 8px", fontSize: "0.8rem", alignSelf: "flex-start", marginTop: "1.5rem" }}
+                              disabled={productosBloqueados}
+                              style={{
+                                padding: "6px 8px",
+                                fontSize: "0.8rem",
+                                alignSelf: "flex-start",
+                                marginTop: "1.5rem",
+                                opacity: productosBloqueados ? 0.5 : 1,
+                                cursor: productosBloqueados ? "not-allowed" : "pointer",
+                              }}
                             >
                               <FaTrash />
                             </button>
@@ -3977,12 +3985,7 @@ const Sells = () => {
 
                 {/* Sección 3: Totales y Anticipo */}
                 {(() => {
-                  const subtotal = (form.productos || []).reduce((acc, it) => {
-                    const pr = productos.find((p) => p.ID === it.productoId);
-                    const precioM2 = Number(pr?.cantidad_m2 || 0);
-                    const cantM2 = Number(it.cantidad || 0);
-                    return acc + precioM2 * cantM2;
-                  }, 0);
+                  const subtotal = calcularSubtotalLocal(form.productos);
                   const ivaVal = form.incluir_iva ? subtotal * 0.16 : 0;
                   const total = subtotal + ivaVal;
                   const sugerido = total * 0.7;

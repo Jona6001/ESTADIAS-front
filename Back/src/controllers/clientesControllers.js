@@ -115,7 +115,10 @@ async function listarClientes(req, res) {
 const Cliente = require("../models/Clientesmodel");
 async function crearCliente(req, res) {
   try {
-    if (!req.usuario || req.usuario.rol !== "admin") {
+    const rolUsuario = String(req.usuario?.rol || "").toLowerCase();
+    const rolesPermitidos = ["admin", "empleado"];
+
+    if (!req.usuario || !rolesPermitidos.includes(rolUsuario)) {
       return res
         .status(403)
         .json({ mensaje: "No tienes permisos para realizar la acción" });

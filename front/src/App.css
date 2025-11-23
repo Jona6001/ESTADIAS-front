@@ -1901,7 +1901,8 @@ input:-webkit-autofill:active {
 /* Verde: activo, pagado, vendido */
 .status-activo,
 .status-pagado,
-.status-vendido {
+.status-vendido,
+.status-entregado {
   background: #e9f8f0;
   color: #1f7a4d;
   border-color: rgba(34, 148, 93, 0.25);
@@ -1920,6 +1921,27 @@ input:-webkit-autofill:active {
   background: #fff6db;
   color: #946200;
   border-color: rgba(244, 189, 0, 0.35);
+}
+
+/* Azul suave: en proceso */
+.status-en_proceso {
+  background: #e6f2ff;
+  color: #1a4b8c;
+  border-color: rgba(26, 75, 140, 0.25);
+}
+
+/* Lila: fabricado */
+.status-fabricado {
+  background: #f1e7ff;
+  color: #5b2c90;
+  border-color: rgba(91, 44, 144, 0.25);
+}
+
+/* Naranja: espera de material */
+.status-espera_material {
+  background: #fff1e6;
+  color: #a05211;
+  border-color: rgba(160, 82, 17, 0.25);
 }
 
 .login-logo img {

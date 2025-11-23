@@ -3,7 +3,7 @@ const { Usuario } = require("../models/Usermodel"); // Asegúrate de que la ruta
 
 const authConfig = {
   secret: "your_secret_key", // Cambia esto por una clave secreta segura
-  expiresIn: "1h", // Tiempo de expiración del token
+  expiresIn: "5h", // Tiempo de expiración del token
 };
 
 // Función para generar un token

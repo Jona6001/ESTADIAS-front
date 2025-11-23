@@ -105,8 +105,9 @@ const Clients = () => {
     } catch (e) {
       if (e.message === "Sesión expirada") return;
       setErrorMsg(e.message || "Error al cargar clientes");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   // Abrir modal para crear
@@ -309,7 +310,9 @@ const Clients = () => {
   try {
     const u = JSON.parse(localStorage.getItem("user") || "{}");
     isAdmin = String(u?.rol || "").toLowerCase() === "admin";
-  } catch {}
+  } catch {
+    /* ignore malformed persisted user */
+  }
 
   return (
     <div className="-bg">

@@ -1,3 +1,35 @@
+/* --- NAVBAR RESPONSIVE FIX --- */
+@media (max-width: 900px) {
+  .nav-center {
+    display: none !important;
+  }
+
+ 
+
+  .mobile-menu .nav-btn {
+    width: 92%;
+    max-width: 200px;
+    min-width: 90px;
+
+    margin: 0 auto;
+    border-radius: 8px;
+    font-size: 1rem;
+    padding: 8px 0;
+    text-align: center;
+  }
+
+  .mobile-menu.open {
+    max-height: 500px;
+    opacity: 1;
+    pointer-events: auto;
+    overflow: visible;
+
+    transition: max-height 0.3s cubic-bezier(.4,0,.2,1),
+                opacity 0.2s ease-in-out;
+  }
+}
+
+
 /* === MODAL PRODUCTOS === */
 .modal-product {
   background: #fff;
@@ -316,30 +348,32 @@ main { padding-top: var(--navbar-offset); }
 }
 
 /* ---- HOME DASHBOARD ---- */
-.home-page {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: #ffffff92
-}
-
-.home-main {
-  flex: 1;
-  width: 100%;
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: calc(var(--navbar-offset) + 32px) 2rem 2.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
-}
-
-@media (max-width: 1024px) {
-  .home-main {
-    padding: calc(var(--navbar-offset) + 28px) 1.5rem 2rem;
+  .mobile-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #fff;
+    position: absolute;
+    top: 100px;
+    top: 1px;
+    /* Siempre debajo del navbar, adaptable */
+    right: 2vw;
+    left: auto;
+    transform: none;
+    width: 96vw;
+    max-width: 200px;
+    min-width: 90px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    z-index: 1001;
+    padding: 18px 0 12px 0;
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transition: max-height 0.3s cubic-bezier(.4,0,.2,1), opacity 0.2s;
   }
-}
-
 @media (max-width: 640px) {
   .home-main {
     padding: calc(var(--navbar-offset) + 22px) 1.1rem 1.6rem;
